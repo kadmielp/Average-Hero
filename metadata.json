@@ -1,0 +1,8 @@
+{
+  "name": "Average Hero",
+  "description": "Use your webcam to track hand movements and slash Sparks to the beat.",
+  "requestFramePermissions": [
+    "camera"
+  ],
+  "songs": []
+}
