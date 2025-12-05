@@ -7,20 +7,24 @@
 
 import React, { useRef, useState, useEffect, useCallback } from 'react';
 import { Canvas } from '@react-three/fiber';
-import { GameStatus, NoteData, SongMetadata, BackgroundAudioEvent } from './types';
+import { GameStatus, NoteData, SongMetadata, BackgroundAudioEvent, GameMode } from './types';
 import { LEAD_IN_TIME } from './constants';
 import { useMediaPipe } from './hooks/useMediaPipe';
 import GameScene from './components/GameScene';
 import WebcamPreview from './components/WebcamPreview';
 import SongProgress from './components/SongProgress';
-import { Play, RefreshCw, VideoOff, Hand, Sparkles, Music, ChevronLeft, Loader2, Upload, AlertCircle, FileAudio } from 'lucide-react';
+import { Play, RefreshCw, VideoOff, Hand, Sparkles, Music, ChevronLeft, Loader2, Upload, AlertCircle, FileAudio, Pause } from 'lucide-react';
+import PlayerModeIcon from './components/PlayerModeIcon';
 import * as Tone from 'tone';
 import { loadMidi, generateChartFromMidi } from './utils/midiUtils';
 import { Midi } from '@tonejs/midi';
 
 const App: React.FC = () => {
     const [gameStatus, setGameStatus] = useState<GameStatus>(GameStatus.LOADING);
+    const [gameMode, setGameMode] = useState<GameMode>(GameMode.STANDARD);
     const [score, setScore] = useState(0);
+    const [scoreP1, setScoreP1] = useState(0);
+    const [scoreP2, setScoreP2] = useState(0);
     const [combo, setCombo] = useState(0);
     const [multiplier, setMultiplier] = useState(1);
     const [health, setHealth] = useState(100);
@@ -117,7 +121,7 @@ const App: React.FC = () => {
 
     // Separate effect for Game Loop cleanup to prevent stopping transport on state changes
     useEffect(() => {
-        if (gameStatus !== GameStatus.PLAYING && Tone.Transport.state === 'started') {
+        if (gameStatus !== GameStatus.PLAYING && gameStatus !== GameStatus.PAUSED && Tone.Transport.state === 'started') {
             try {
                 Tone.Transport.stop();
                 Tone.Transport.cancel();
@@ -141,6 +145,20 @@ const App: React.FC = () => {
             const midi = await loadMidi(song.filename);
             const { chart, backgroundEvents } = generateChartFromMidi(midi, song.difficulty);
             preloadedDataRef.current.set(song.id, { midi, chart, backgroundEvents });
+
+            // Calculate Metadata
+            const duration = midi.duration;
+            const noteCountLeft = chart.filter(n => n.type === 'left').length;
+            const noteCountRight = chart.filter(n => n.type === 'right').length;
+
+            // Update Song Metadata in State
+            setSongs(prev => prev.map(s => {
+                if (s.id === song.id) {
+                    return { ...s, duration, noteCountLeft, noteCountRight };
+                }
+                return s;
+            }));
+
             console.log(`Preloaded ${song.title}`);
         } catch (e) {
             console.warn(`Skipping preload for ${song.title} - File not found or invalid.`);
@@ -221,6 +239,12 @@ const App: React.FC = () => {
             }
         }
 
+        // NEW: Skip all visual/gameplay updates for Auto-Played (Ghost) notes
+        const isGhostHit = (gameMode === GameMode.RIGHT_HAND_ONLY && note.type === 'left') ||
+            (gameMode === GameMode.LEFT_HAND_ONLY && note.type === 'right');
+
+        if (isGhostHit) return;
+
         // Haptic feedback for impact
         if (navigator.vibrate) {
             navigator.vibrate(goodCut ? 40 : 20);
@@ -235,9 +259,22 @@ const App: React.FC = () => {
             return newCombo;
         });
 
-        setScore(s => s + (points * multiplier));
+        // Scoring Logic based on Game Mode
+        if (gameMode === GameMode.COOP_SPLIT) {
+            if (note.type === 'right') {
+                setScoreP1(s => s + (points * multiplier));
+            } else {
+                setScoreP2(s => s + (points * multiplier));
+            }
+        } else {
+            // Standard Mode (Both Hands count to global score)
+            // Note: Single Hand modes are handled by isGhostHit check above, 
+            // so we only get here if it's a valid player hit.
+            setScore(s => s + (points * multiplier));
+        }
+
         setHealth(h => Math.min(100, h + 2));
-    }, [multiplier]);
+    }, [multiplier, gameMode]);
 
     // New Handler for Long Note Holds
     const handleNoteHold = useCallback((note: NoteData) => {
@@ -354,7 +391,10 @@ const App: React.FC = () => {
         } catch (e) { console.warn("Transport cleanup error", e); }
 
         // Reset Game State
+        // Reset Game State
         setScore(0);
+        setScoreP1(0);
+        setScoreP2(0);
         setCombo(0);
         setMultiplier(1);
         setHealth(100);
@@ -372,17 +412,25 @@ const App: React.FC = () => {
 
         // Start Countdown Visuals
         setCountdown(LEAD_IN_TIME);
-
-        const countdownInterval = setInterval(() => {
-            setCountdown(prev => {
-                if (prev === null || prev <= 1) {
-                    clearInterval(countdownInterval);
-                    return null;
-                }
-                return prev - 1;
-            });
-        }, 1000);
     };
+
+    // Countdown Logic (Handles Pause)
+    useEffect(() => {
+        let interval: NodeJS.Timeout;
+        if (gameStatus === GameStatus.PLAYING && countdown !== null) {
+            if (countdown <= 0) {
+                setCountdown(null);
+            } else {
+                interval = setInterval(() => {
+                    setCountdown(prev => {
+                        if (prev === null || prev <= 1) return null;
+                        return prev - 1;
+                    });
+                }, 1000);
+            }
+        }
+        return () => clearInterval(interval);
+    }, [gameStatus, countdown]);
 
     const startMusic = (midi: Midi, backgroundEvents: BackgroundAudioEvent[]) => {
         if (!musicSynthsRef.current) return;
@@ -476,10 +524,12 @@ const App: React.FC = () => {
 
     const goToSelection = () => {
         setGameStatus(GameStatus.SONG_SELECTION);
+        setCountdown(null);
     };
 
     const goToMenu = () => {
         setGameStatus(GameStatus.IDLE);
+        setCountdown(null);
         setSelectedSong(null);
         setErrorMessage(null);
     };
@@ -487,6 +537,31 @@ const App: React.FC = () => {
     const getCurrentTime = useCallback(() => {
         return Tone.Transport.seconds;
     }, []);
+
+    const togglePause = useCallback(() => {
+        if (gameStatus === GameStatus.PLAYING) {
+            setGameStatus(GameStatus.PAUSED);
+            Tone.Transport.pause();
+        } else if (gameStatus === GameStatus.PAUSED) {
+            setGameStatus(GameStatus.PLAYING);
+            Tone.Transport.start();
+        }
+    }, [gameStatus]);
+
+    useEffect(() => {
+        const handleKeyDown = (e: KeyboardEvent) => {
+            if (e.key === 'Escape') {
+                if (gameStatus === GameStatus.PLAYING || gameStatus === GameStatus.PAUSED) {
+                    togglePause();
+                } else if (gameStatus === GameStatus.SONG_SELECTION) {
+                    goToMenu();
+                }
+            }
+        };
+
+        window.addEventListener('keydown', handleKeyDown);
+        return () => window.removeEventListener('keydown', handleKeyDown);
+    }, [gameStatus, togglePause]);
 
     const loadingMessage = !isCameraReady ? "Waiting for Camera..." : "Loading Assets...";
 
@@ -507,6 +582,7 @@ const App: React.FC = () => {
                 {gameStatus === GameStatus.PLAYING && (
                     <GameScene
                         gameStatus={gameStatus}
+                        gameMode={gameMode}
                         getCurrentTime={getCurrentTime}
                         handPositionsRef={handPositionsRef}
                         chart={gameChart}
@@ -534,21 +610,50 @@ const App: React.FC = () => {
                         {/* Top HUD */}
                         <div className="absolute top-0 left-0 right-0 flex justify-between items-start p-6 text-white w-full pointer-events-none">
                             {/* Health Bar (Top Left) */}
-                            <div className="w-1/3 max-w-xs pointer-events-auto">
-                                <div className="text-xs text-gray-400 mb-1 uppercase tracking-wider font-bold">System Integrity</div>
-                                <div className="h-3 bg-gray-900/80 rounded-full overflow-hidden border border-gray-700/50 backdrop-blur-sm">
-                                    <div
-                                        className={`h-full transition-all duration-300 ease-out ${health > 50 ? 'bg-green-500' : health > 20 ? 'bg-yellow-500' : 'bg-red-500 shadow-[0_0_10px_red]'}`}
-                                        style={{ width: `${health}%` }}
-                                    />
+                            <div className="w-1/3 max-w-xs pointer-events-auto flex gap-4">
+                                <button
+                                    onClick={togglePause}
+                                    className="bg-white/10 hover:bg-white/20 p-3 rounded-lg backdrop-blur-md border border-white/10 transition-colors"
+                                >
+                                    <Pause size={24} />
+                                </button>
+                                <div className="flex-1">
+                                    <div className="text-xs text-gray-400 mb-1 uppercase tracking-wider font-bold">System Integrity</div>
+                                    <div className="h-3 bg-gray-900/80 rounded-full overflow-hidden border border-gray-700/50 backdrop-blur-sm">
+                                        <div
+                                            className={`h-full transition-all duration-300 ease-out ${health > 50 ? 'bg-green-500' : health > 20 ? 'bg-yellow-500' : 'bg-red-500 shadow-[0_0_10px_red]'}`}
+                                            style={{ width: `${health}%` }}
+                                        />
+                                    </div>
                                 </div>
                             </div>
 
                             {/* Score & Combo (Top Center) */}
                             <div className="flex flex-col items-center transform -translate-y-2">
-                                <div className="text-6xl font-black tracking-tighter drop-shadow-[0_0_10px_rgba(255,255,255,0.5)] font-mono">
-                                    {score.toLocaleString()}
+                                <div className="mb-2 opacity-80 scale-90">
+                                    <PlayerModeIcon mode={gameMode} />
                                 </div>
+                                {gameMode === GameMode.COOP_SPLIT ? (
+                                    <div className="flex gap-8">
+                                        <div className="flex flex-col items-center">
+                                            <div className="text-xs font-bold text-blue-400 uppercase tracking-widest">Player 1</div>
+                                            <div className="text-4xl font-black tracking-tighter drop-shadow-[0_0_10px_rgba(59,130,246,0.5)] font-mono text-blue-100">
+                                                {scoreP1.toLocaleString()}
+                                            </div>
+                                        </div>
+                                        <div className="w-px bg-white/20 h-12 mx-2"></div>
+                                        <div className="flex flex-col items-center">
+                                            <div className="text-xs font-bold text-red-400 uppercase tracking-widest">Player 2</div>
+                                            <div className="text-4xl font-black tracking-tighter drop-shadow-[0_0_10px_rgba(239,68,68,0.5)] font-mono text-red-100">
+                                                {scoreP2.toLocaleString()}
+                                            </div>
+                                        </div>
+                                    </div>
+                                ) : (
+                                    <div className="text-6xl font-black tracking-tighter drop-shadow-[0_0_10px_rgba(255,255,255,0.5)] font-mono">
+                                        {score.toLocaleString()}
+                                    </div>
+                                )}
                                 {combo > 5 && (
                                     <div className="text-2xl font-bold text-blue-400 animate-pulse mt-2">
                                         {combo}x COMBO
@@ -570,7 +675,7 @@ const App: React.FC = () => {
                         {/* Bottom HUD (Progress Bar) */}
                         <div className="absolute bottom-8 left-0 right-0 flex flex-col items-center justify-center pointer-events-none">
                             <div className="bg-black/50 backdrop-blur-md p-4 rounded-2xl border border-white/10 w-full max-w-2xl flex flex-col items-center gap-2">
-                                <div className="text-sm font-bold text-white truncate">{selectedSong?.title} <span className="text-gray-400 font-normal mx-2">//</span> {selectedSong?.artist}</div>
+                                <div className="text-sm font-bold text-white truncate">{selectedSong?.title}</div>
                                 {midiRef.current && (
                                     <SongProgress
                                         duration={midiRef.current.duration + LEAD_IN_TIME}
@@ -583,8 +688,35 @@ const App: React.FC = () => {
                     </>
                 )}
 
+                {/* Pause Menu */}
+                {gameStatus === GameStatus.PAUSED && (
+                    <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/80 backdrop-blur-md z-50 pointer-events-auto animate-in fade-in duration-200">
+                        <h2 className="text-6xl font-black text-white italic tracking-tighter mb-12">PAUSED</h2>
+                        <div className="flex flex-col gap-4 min-w-[300px]">
+                            <button
+                                onClick={togglePause}
+                                className="px-8 py-4 bg-white text-black font-bold uppercase tracking-widest hover:bg-blue-400 transition-colors rounded skew-x-[-10deg]"
+                            >
+                                <div className="skew-x-[10deg] flex items-center justify-center gap-2"><Play size={20} /> Resume</div>
+                            </button>
+                            <button
+                                onClick={goToSelection}
+                                className="px-8 py-4 border border-white/30 text-white font-bold uppercase tracking-widest hover:bg-white/10 transition-colors rounded skew-x-[-10deg]"
+                            >
+                                <div className="skew-x-[10deg] flex items-center justify-center gap-2"><Music size={20} /> Change Song</div>
+                            </button>
+                            <button
+                                onClick={goToMenu}
+                                className="px-8 py-4 border border-white/30 text-white font-bold uppercase tracking-widest hover:bg-red-500/20 hover:border-red-500/50 hover:text-red-400 transition-colors rounded skew-x-[-10deg]"
+                            >
+                                <div className="skew-x-[10deg] flex items-center justify-center gap-2"><ChevronLeft size={20} /> Exit to Menu</div>
+                            </button>
+                        </div>
+                    </div>
+                )}
+
                 {/* Countdown Overlay */}
-                {countdown !== null && (
+                {countdown !== null && gameStatus !== GameStatus.PAUSED && (
                     <div className="absolute inset-0 flex items-center justify-center z-50 pointer-events-none">
                         <div className="text-[15rem] font-black text-white animate-ping opacity-80 drop-shadow-[0_0_30px_rgba(59,130,246,0.8)]">
                             {countdown}
@@ -623,6 +755,30 @@ const App: React.FC = () => {
                             <div className="absolute inset-0 bg-blue-500 transform translate-y-full group-hover:translate-y-0 transition-transform duration-300"></div>
                         </button>
 
+                        {/* Game Mode Selection */}
+                        <div className="mt-8 flex gap-4">
+                            {[
+                                { mode: GameMode.STANDARD, label: "Solo (Dual)", color: "bg-purple-500" },
+                                { mode: GameMode.LEFT_HAND_ONLY, label: "Solo (Left)", color: "bg-red-500" },
+                                { mode: GameMode.RIGHT_HAND_ONLY, label: "Solo (Right)", color: "bg-blue-500" },
+                                { mode: GameMode.COOP_SPLIT, label: "Co-op Split", color: "bg-green-500" }
+                            ].map((m) => (
+                                <button
+                                    key={m.mode}
+                                    onClick={() => setGameMode(m.mode)}
+                                    className={`px-6 py-4 rounded-xl transition-all duration-200 border border-white/10 flex flex-col items-center gap-2 ${gameMode === m.mode
+                                        ? `${m.color} bg-opacity-20 border-white/50 shadow-[0_0_20px_rgba(255,255,255,0.2)] scale-105`
+                                        : 'bg-white/5 hover:bg-white/10'
+                                        }`}
+                                >
+                                    <PlayerModeIcon mode={m.mode} />
+                                    <div className={`text-xs font-bold uppercase tracking-wider ${gameMode === m.mode ? 'text-white' : 'text-gray-400'}`}>
+                                        {m.label}
+                                    </div>
+                                </button>
+                            ))}
+                        </div>
+
                         <div className="mt-12 flex gap-8 text-gray-500">
                             <div className="flex items-center gap-2"><Hand size={20} /> Use Hands</div>
                             <div className="flex items-center gap-2"><Music size={20} /> Feel the Beat</div>
@@ -642,6 +798,18 @@ const App: React.FC = () => {
                                 >
                                     <ChevronLeft className="mr-2" /> Back to Title
                                 </button>
+
+                                <div className="flex items-center gap-4 bg-white/5 px-6 py-3 rounded-xl border border-white/10">
+                                    <div className="scale-90">
+                                        <PlayerModeIcon mode={gameMode} />
+                                    </div>
+                                    <div className="text-sm font-bold text-white uppercase tracking-wider">
+                                        {gameMode === GameMode.STANDARD && "Solo (Dual)"}
+                                        {gameMode === GameMode.RIGHT_HAND_ONLY && "Solo (Right)"}
+                                        {gameMode === GameMode.LEFT_HAND_ONLY && "Solo (Left)"}
+                                        {gameMode === GameMode.COOP_SPLIT && "Co-op Split"}
+                                    </div>
+                                </div>
                             </div>
 
                             {errorMessage && (
@@ -663,17 +831,34 @@ const App: React.FC = () => {
                                         disabled={isSongLoading}
                                         className="group relative bg-gray-800/50 border border-gray-700 hover:border-blue-500 hover:bg-gray-800 p-6 rounded-xl text-left transition-all duration-200 hover:-translate-y-1 shadow-lg hover:shadow-blue-500/20"
                                     >
-                                        <div className="flex justify-between items-start mb-4">
-                                            <div className={`px-2 py-1 rounded text-xs font-bold uppercase tracking-wider ${song.difficulty === 'Hard' ? 'bg-red-500/20 text-red-400' :
-                                                song.difficulty === 'Medium' ? 'bg-yellow-500/20 text-yellow-400' :
-                                                    'bg-green-500/20 text-green-400'
-                                                }`}>
-                                                {song.difficulty}
-                                            </div>
-                                            <div className="text-gray-500 text-xs font-mono">{song.bpm} BPM</div>
+                                        <div className="flex justify-between items-start mb-2">
+                                            <div className="text-xl font-bold text-white group-hover:text-blue-400 transition-colors truncate pr-2">{song.title}</div>
+                                            {song.duration && (
+                                                <div className="text-gray-400 text-sm font-mono whitespace-nowrap">
+                                                    {Math.floor(song.duration / 60)}:{Math.floor(song.duration % 60).toString().padStart(2, '0')}
+                                                </div>
+                                            )}
                                         </div>
-                                        <div className="text-xl font-bold text-white mb-1 group-hover:text-blue-400 transition-colors">{song.title}</div>
-                                        <div className="text-sm text-gray-400">{song.artist}</div>
+
+                                        {/* Note Balance Bar */}
+                                        {(song.noteCountLeft !== undefined && song.noteCountRight !== undefined) && (
+                                            <div className="mt-4">
+                                                <div className="flex justify-between text-[10px] uppercase font-bold text-gray-500 mb-1">
+                                                    <span className="text-red-400">{Math.round((song.noteCountLeft / (song.noteCountLeft + song.noteCountRight)) * 100)}% Left</span>
+                                                    <span className="text-blue-400">{Math.round((song.noteCountRight / (song.noteCountLeft + song.noteCountRight)) * 100)}% Right</span>
+                                                </div>
+                                                <div className="h-2 bg-gray-700 rounded-full overflow-hidden flex">
+                                                    <div
+                                                        className="h-full bg-red-500"
+                                                        style={{ width: `${(song.noteCountLeft / (song.noteCountLeft + song.noteCountRight)) * 100}%` }}
+                                                    />
+                                                    <div
+                                                        className="h-full bg-blue-500"
+                                                        style={{ width: `${(song.noteCountRight / (song.noteCountLeft + song.noteCountRight)) * 100}%` }}
+                                                    />
+                                                </div>
+                                            </div>
+                                        )}
 
                                         {isSongLoading && selectedSong?.id === song.id && (
                                             <div className="absolute inset-0 bg-black/60 flex items-center justify-center rounded-xl backdrop-blur-sm">
@@ -722,7 +907,21 @@ const App: React.FC = () => {
                                 Final Score
                             </div>
                             <div className="text-6xl font-mono font-bold text-white mt-2">
-                                {score.toLocaleString()}
+                                {gameMode === GameMode.COOP_SPLIT ? (
+                                    <div className="flex gap-8 justify-center">
+                                        <div className="flex flex-col items-center">
+                                            <span className="text-2xl text-blue-400 mb-1">P1</span>
+                                            {scoreP1.toLocaleString()}
+                                        </div>
+                                        <div className="w-px bg-white/20 h-16"></div>
+                                        <div className="flex flex-col items-center">
+                                            <span className="text-2xl text-red-400 mb-1">P2</span>
+                                            {scoreP2.toLocaleString()}
+                                        </div>
+                                    </div>
+                                ) : (
+                                    score.toLocaleString()
+                                )}
                             </div>
                         </div>
 

@@ -1,10 +1,13 @@
-# Average Hero
+# Asteroid Hero
+
+![Version](https://img.shields.io/badge/version-1.5.0-blue.svg)
 
 A rhythm game powered by MediaPipe hand tracking. Use your webcam to slash notes to the beat!
 
 ## Features
 
 *   **Hand Tracking Gameplay**: Use your hands to slash notes in 3D space.
+*   **Star Notes**: Slice through dynamic, spinning 3D stars.
 *   **Custom Song Support**: Automatically loads MIDI files from the `songs/` directory.
 *   **Dynamic Visuals**: Real-time feedback, particle effects, and a responsive HUD.
 *   **Scoring System**: Combo multipliers and accuracy tracking.

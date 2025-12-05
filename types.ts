@@ -11,8 +11,16 @@ export enum GameStatus {
   IDLE = 'IDLE',
   SONG_SELECTION = 'SONG_SELECTION',
   PLAYING = 'PLAYING',
+  PAUSED = 'PAUSED',
   GAME_OVER = 'GAME_OVER',
   VICTORY = 'VICTORY'
+}
+
+export enum GameMode {
+  STANDARD = 'STANDARD',
+  RIGHT_HAND_ONLY = 'RIGHT_HAND_ONLY',
+  LEFT_HAND_ONLY = 'LEFT_HAND_ONLY',
+  COOP_SPLIT = 'COOP_SPLIT'
 }
 
 export type HandType = 'left' | 'right';
@@ -42,13 +50,13 @@ export interface NoteData {
   lineLayer: number; // 0-2 (vertical position)
   type: HandType;    // which hand should cut it
   cutDirection: CutDirection;
-  audio: NoteAudioData; 
-  
+  audio: NoteAudioData;
+
   // State
   hit?: boolean;      // Has the head been hit?
   isHolding?: boolean; // Is the player currently holding this long note?
   missed?: boolean;
-  hitTime?: number; 
+  hitTime?: number;
 }
 
 export interface BackgroundAudioEvent {
@@ -75,6 +83,9 @@ export interface SongMetadata {
   filename: string;
   difficulty: 'Easy' | 'Medium' | 'Hard';
   bpm: number;
+  duration?: number;
+  noteCountLeft?: number;
+  noteCountRight?: number;
 }
 
 export const COLORS = {

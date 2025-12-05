@@ -9,10 +9,12 @@ import React, { useRef, useState, useMemo, useEffect } from 'react';
 import { useFrame, useThree } from '@react-three/fiber';
 import { Environment, Grid, PerspectiveCamera } from '@react-three/drei';
 import * as THREE from 'three';
-import { GameStatus, NoteData, HandPositions, COLORS, CutDirection } from '../types';
+import { GameStatus, NoteData, HandPositions, COLORS, CutDirection, GameMode } from '../types';
 import { PLAYER_Z, SPAWN_Z, MISS_Z, NOTE_SPEED, LANE_X_POSITIONS, LAYER_Y_POSITIONS } from '../constants';
 import Note from './Note';
 import Saber from './Saber';
+
+// Force Rebuild Comment
 
 // --- STAR TUNNEL COMPONENT ---
 // Creates a "Warp Speed" effect with particles flying towards camera
@@ -38,7 +40,7 @@ const StarTunnel = ({ speed }: { speed: number }) => {
     if (!meshRef.current) return;
 
     // If speed is 0 (game paused), slight drift
-    const currentSpeed = speed > 0 ? speed : 1;
+    const currentSpeed = speed > 0 ? speed : 0.5;
 
     particles.forEach((particle, i) => {
       // Move particle towards camera (+Z)
@@ -74,6 +76,7 @@ const StarTunnel = ({ speed }: { speed: number }) => {
 
 interface GameSceneProps {
   gameStatus: GameStatus;
+  gameMode: GameMode;
   getCurrentTime: () => number;
   handPositionsRef: React.MutableRefObject<any>; // Simplified type for the raw ref
   chart: NoteData[];
@@ -85,6 +88,7 @@ interface GameSceneProps {
 
 const GameScene: React.FC<GameSceneProps> = ({
   gameStatus,
+  gameMode,
   getCurrentTime,
   handPositionsRef,
   chart,
@@ -125,8 +129,11 @@ const GameScene: React.FC<GameSceneProps> = ({
   const vecB = useMemo(() => new THREE.Vector3(), []);
 
   // Wrap onNoteHit to add Scene-level effects (Camera shake)
-  const handleHit = (note: NoteData, goodCut: boolean) => {
-    shakeIntensity.current = goodCut ? 0.3 : 0.15;
+  const handleHit = (note: NoteData, goodCut: boolean, isAutoPlay: boolean = false) => {
+    // Only shake if it's a player hit
+    if (!isAutoPlay) {
+      shakeIntensity.current = goodCut ? 0.3 : 0.15;
+    }
     onNoteHit(note, goodCut);
   }
 
@@ -137,7 +144,7 @@ const GameScene: React.FC<GameSceneProps> = ({
     // Animate grid to create forward velocity sensation
     if (gridRef.current) {
       const time = isPlaying ? getCurrentTime() : state.clock.getElapsedTime();
-      const speed = isPlaying ? NOTE_SPEED : 2; // Slow drift when idle
+      const speed = isPlaying ? NOTE_SPEED : (gameStatus === GameStatus.PAUSED ? 0 : 2); // Stop when paused, slow drift when idle
 
       // Modulo 5 matches the sectionSize of the Grid to create a seamless loop
       const zOffset = (time * speed) % 5;
@@ -276,12 +283,48 @@ const GameScene: React.FC<GameSceneProps> = ({
         continue;
       }
 
+      // --- AUTO-PLAY LOGIC (RIGHT_HAND_ONLY) ---
+      if (gameMode === GameMode.RIGHT_HAND_ONLY && note.type === 'left') {
+        // Perfect hit window is around Z=PLAYER_Z (0)
+        // We trigger it slightly early to ensure it feels responsive visually
+        if (!note.hit && currentZ >= PLAYER_Z - 0.1) {
+          note.hit = true;
+          note.hitTime = time;
+          handleHit(note, true, true); // isAutoPlay = true
+
+          if (note.length > 0) {
+            note.isHolding = true;
+            setVisibleNoteCount(c => c + 0.0001);
+          } else {
+            activeNotesRef.current.splice(i, 1);
+            setVisibleNoteCount(c => c + 0.0001);
+          }
+          continue; // Skip standard collision check
+        }
+      }
+
+      // --- AUTO-PLAY LOGIC (LEFT_HAND_ONLY) ---
+      if (gameMode === GameMode.LEFT_HAND_ONLY && note.type === 'right') {
+        if (!note.hit && currentZ >= PLAYER_Z - 0.1) {
+          note.hit = true;
+          note.hitTime = time;
+          handleHit(note, true, true); // isAutoPlay = true
+
+          if (note.length > 0) {
+            note.isHolding = true;
+            setVisibleNoteCount(c => c + 0.0001);
+          } else {
+            activeNotesRef.current.splice(i, 1);
+            setVisibleNoteCount(c => c + 0.0001);
+          }
+          continue;
+        }
+      }
+
       // Collision check (only if near player)
       // Broad Z-check first to avoid expensive math
       if (!note.hit && currentZ > PLAYER_Z - 2.5 && currentZ < PLAYER_Z + 1.5) {
         const handPos = note.type === 'left' ? hands.left : hands.right;
-        const handVel = note.type === 'left' ? hands.leftVelocity : hands.rightVelocity;
-
         if (handPos) {
           const notePos = vecA.set(
             LANE_X_POSITIONS[note.lineIndex],
@@ -302,26 +345,24 @@ const GameScene: React.FC<GameSceneProps> = ({
 
           // Radius 0.6 covers the lane well (width 0.8) without too much overlap
           // Z-Depth 1.2 corresponds to ~100ms timing window at speed 12
+          // Radius 0.6 covers the lane well (width 0.8) without too much overlap
+          // Z-Depth 1.2 corresponds to ~100ms timing window at speed 12
           if (planarDist < 0.6 && dz < 1.2) {
-            const speed = handVel.length();
-            // Minimal speed required to prevent accidental static hits, 
-            // but low enough for webcam smoothing (0.2 is very forgiving)
-            if (speed > 0.2) {
-              note.hit = true;
-              note.hitTime = time;
-              handleHit(note, true);
+            // Speed check removed - static hits allowed
+            note.hit = true;
+            note.hitTime = time;
+            handleHit(note, true);
 
-              if (note.length > 0) {
-                // Start Holding!
-                note.isHolding = true;
-                // Don't remove from activeNotes yet!
-                // We need it for the tail logic in subsequent frames.
-                setVisibleNoteCount(c => c + 0.0001); // Update visuals to hide head
-              } else {
-                // Single hit, remove
-                activeNotesRef.current.splice(i, 1);
-                setVisibleNoteCount(c => c + 0.0001); // Update debris
-              }
+            if (note.length > 0) {
+              // Start Holding!
+              note.isHolding = true;
+              // Don't remove from activeNotes yet!
+              // We need it for the tail logic in subsequent frames.
+              setVisibleNoteCount(c => c + 0.0001); // Update visuals to hide head
+            } else {
+              // Single hit, remove
+              activeNotesRef.current.splice(i, 1);
+              setVisibleNoteCount(c => c + 0.0001); // Update debris
             }
           }
         }
@@ -336,6 +377,11 @@ const GameScene: React.FC<GameSceneProps> = ({
     const now = getCurrentTime();
 
     return notesState.slice(0, nextNoteIndexRef.current).filter(n => {
+      // NEW: Hide notes if they belong to the unused hand in Single-Hand modes
+      // Must be checked FIRST to prevent debris from showing up
+      if (gameMode === GameMode.RIGHT_HAND_ONLY && n.type === 'left') return false;
+      if (gameMode === GameMode.LEFT_HAND_ONLY && n.type === 'right') return false;
+
       if (n.missed) return false;
 
       // Garbage Collection for Old Hits (prevents memory leak)
@@ -387,7 +433,7 @@ const GameScene: React.FC<GameSceneProps> = ({
       <Environment preset="night" />
 
       {/* Warp Speed Particle Tunnel */}
-      <StarTunnel speed={gameStatus === GameStatus.PLAYING ? NOTE_SPEED : 2} />
+      <StarTunnel speed={gameStatus === GameStatus.PLAYING ? NOTE_SPEED : (gameStatus === GameStatus.PAUSED ? 0 : 2)} />
 
       {/* Moving Grid / Floor */}
       <group ref={gridRef}>
@@ -398,28 +444,37 @@ const GameScene: React.FC<GameSceneProps> = ({
         </mesh>
       </group>
 
-      <Saber
-        type="left"
-        positionRef={leftHandPosRef}
-        rotationRef={leftHandRotRef}
-      />
-      <Saber
-        type="right"
-        positionRef={rightHandPosRef}
-        rotationRef={rightHandRotRef}
-      />
 
-      {visibleNotes.map(note => (
-        <Note
-          key={note.id}
-          data={note}
-          // IMPORTANT: Pass state as primitive props so React detects changes
-          // even if the 'data' object reference is mutated.
-          hit={note.hit}
-          isHolding={note.isHolding}
-          missed={note.missed}
+
+      {gameMode !== GameMode.RIGHT_HAND_ONLY && (
+        <Saber
+          type="left"
+          positionRef={leftHandPosRef}
+          rotationRef={leftHandRotRef}
         />
-      ))}
+      )
+      }
+      {gameMode !== GameMode.LEFT_HAND_ONLY && (
+        <Saber
+          type="right"
+          positionRef={rightHandPosRef}
+          rotationRef={rightHandRotRef}
+        />
+      )}
+
+      {
+        visibleNotes.map(note => (
+          <Note
+            key={note.id}
+            data={note}
+            // IMPORTANT: Pass state as primitive props so React detects changes
+            // even if the 'data' object reference is mutated.
+            hit={note.hit}
+            isHolding={note.isHolding}
+            missed={note.missed}
+          />
+        ))
+      }
     </>
   );
 };

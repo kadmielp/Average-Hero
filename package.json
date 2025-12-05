@@ -1,7 +1,7 @@
 {
-  "name": "average-hero",
+  "name": "asteroid-hero",
   "private": true,
-  "version": "0.0.0",
+  "version": "1.5.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -13,9 +13,12 @@
     "@react-three/drei": "9.112.0",
     "@react-three/fiber": "8.17.6",
     "@tonejs/midi": "2.0.28",
+    "clsx": "^2.1.1",
+    "framer-motion": "^12.23.25",
     "lucide-react": "0.436.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
+    "tailwind-merge": "^3.4.0",
     "three": "0.167.1",
     "tone": "14.7.77"
   },
@@ -25,6 +28,9 @@
     "@types/react-dom": "^19.2.3",
     "@types/three": "^0.181.0",
     "@vitejs/plugin-react": "^5.0.0",
+    "autoprefixer": "^10.4.22",
+    "postcss": "^8.5.6",
+    "tailwindcss": "^4.1.17",
     "typescript": "~5.8.2",
     "vite": "^6.2.0"
   }
