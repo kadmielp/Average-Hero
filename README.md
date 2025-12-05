@@ -1,6 +1,8 @@
-# Asteroid Hero
-
+# Average Hero
 ![Version](https://img.shields.io/badge/version-1.5.0-blue.svg)
+
+![Game Logo](public/averagehero.png)
+
 
 A rhythm game powered by MediaPipe hand tracking. Use your webcam to slash notes to the beat!
 
@@ -11,6 +13,8 @@ A rhythm game powered by MediaPipe hand tracking. Use your webcam to slash notes
 *   **Custom Song Support**: Automatically loads MIDI files from the `songs/` directory.
 *   **Dynamic Visuals**: Real-time feedback, particle effects, and a responsive HUD.
 *   **Scoring System**: Combo multipliers and accuracy tracking.
+
+![Gameplay](public/gameplay.png)
 
 ## Getting Started
 
